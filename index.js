@@ -10,6 +10,11 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok' });
 });
 
+app.get('/test-beatly-be', (req, res) => {
+  console.log(`test-beatly-be endpoint hit`);
+  res.json({ status: 'ok' });
+});
+
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 }); 

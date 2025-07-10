@@ -1,26 +1,24 @@
 name: Build and Publish
 
-on:
-  push:
-    branches: [main, staging]
-  pull_request:
-    branches: [main, staging]
-
 env:
   AWS_REGION: us-east-1
   INFRA_GIT_REPO: Beatly-src/infra
   SERVICE_NAME: test-beatly-be
   PROJECT_NAME_WITHOUT_ENV: beatly
 
+on:
+  push:
+    branches: [main, staging]
+  pull_request:
+    branches: [main, staging]
+
 jobs:
-  # First job - determine the environment based on branch
   determine-environment:
     name: Determine Environment
     runs-on: ubuntu-latest
     outputs:
       environment: ${{ steps.determine-env.outputs.environment }}
     steps:
-      # Determine the environment (stage, prod)
       - name: Determine environment
         id: determine-env
         run: |
@@ -30,11 +28,9 @@ jobs:
             echo "environment=stage" >> $GITHUB_OUTPUT
           fi
 
-  # Main job - build and publish to ECR
   build-and-publish:
     name: Build and Publish to ECR
     needs: determine-environment
-    # Use the environment determined by the previous job
     environment: ${{ needs.determine-environment.outputs.environment }}
     runs-on: ubuntu-latest
 
@@ -42,26 +38,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      # Set up environment for building (Node.js, Java, etc.)
-      - name: Set up environment
-        uses: actions/setup-node@v3 # Example for Node.js
-        with:
-          node-version: "18"
-
-      # Generate image tag from commit SHA
-      - name: Generate image tag
-        id: vars
-        run: |
-          echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-          echo "image_tag=$(date +%Y%m%d)-$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-
-      # Run tests
-      # - name: Run tests
-      #   run: |
-      #     npm ci
-      #     npm test
-
-      # Configure AWS credentials - now using environment-specific secrets
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v1
         with:
@@ -69,37 +45,32 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # Login to Amazon ECR
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v1
 
-      # Build, tag, and push Docker image to ECR
       - name: Build, tag, and push image to Amazon ECR
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           ECR_REPOSITORY: ${{ needs.determine-environment.outputs.environment }}-${{ env.PROJECT_NAME_WITHOUT_ENV }}-services
-          SERVICE_TAG: ${{ env.SERVICE_NAME }}-${{ steps.vars.outputs.image_tag }}
+          SERVICE_TAG: ${{ env.SERVICE_NAME }}-${{ github.sha }}
           LATEST_TAG: ${{ env.SERVICE_NAME }}-latest
         run: |
-          # Build Docker image
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$SERVICE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY:$LATEST_TAG .
-
-          # Push Docker image to ECR
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$SERVICE_TAG
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$LATEST_TAG
-
-          # Save variables for the next step
           echo "IMAGE_TAG=$SERVICE_TAG" >> $GITHUB_ENV
           echo "REPOSITORY=$ECR_REPOSITORY" >> $GITHUB_ENV
           echo "REGISTRY=$ECR_REGISTRY" >> $GITHUB_ENV
 
-      # Trigger deployment in the infrastructure repository
       - name: Trigger deployment
         env:
           ENVIRONMENT: ${{ needs.determine-environment.outputs.environment }}
           GH_TOKEN: ${{ secrets.INFRA_GIT_REPO_TOKEN }}
         run: |
+          # Encode all repository secrets
+          ENCODED_SECRETS=$(echo '${{ toJSON(secrets) }}' | base64 -w 0)
+
           # Prepare the payload for the infrastructure repository workflow
           PAYLOAD=$(cat <<EOF
           {
@@ -109,13 +80,13 @@ jobs:
               "environment": "$ENVIRONMENT",
               "image_tag": "$IMAGE_TAG",
               "region": "${{ env.AWS_REGION }}",
-              "project_name": "$ENVIRONMENT-${{ env.PROJECT_NAME_WITHOUT_ENV }}"
+              "project_name": "$ENVIRONMENT-${{ env.PROJECT_NAME_WITHOUT_ENV }}",
+              "service_secrets": "$ENCODED_SECRETS"
             }
           }
           EOF
           )
 
-          # Trigger the workflow in the infrastructure repository
           curl -X POST \
             -H "Authorization: token $GH_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
